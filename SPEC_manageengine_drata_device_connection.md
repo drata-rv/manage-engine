@@ -1,5 +1,4 @@
 # SPEC: ManageEngine Endpoint Central to Drata Custom Device Connection
-**Source:** Drata Solutions Architecture  
 **Execution Assumption:** Windows EC2 (on-premises ManageEngine instance)
 
 ---
@@ -176,10 +175,10 @@ foreach ($device in $mergedDevices) {
 
 ---
 
-## 7. Open Items Requiring Compliance Team Input
+## 7. Items Requiring Input
 
 1. **Approved AV/EDR product name strings** for software matching.
 2. **Approved password manager product name strings** for software matching.
 3. **Maximum screen lock timeout threshold** (in seconds) that constitutes compliant.
 4. **Confirmation of CSV column headers** from a live ManageEngine export for both BitLocker and screen lock reports.
-5. **User email field confirmation**: Verify whether `ownerEmailID` or `agent_logged_on_users` reliably contains the user's organizational email address in the SmartComms deployment. This is the field that maps the device to a Drata personnel record.
+5. **User email field confirmation**: Ensure `ownerEmailID` or `agent_logged_on_users` reliably contains the user's organizational email address in the SmartComms deployment. This is the field that maps the device to a Drata personnel record.
