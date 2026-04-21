@@ -1,4 +1,4 @@
-# SPEC: 
+# SPEC
 # ManageEngine Endpoint Central to Drata Custom Device Connection
 **Execution Assumption:** Windows EC2 (on-premises ManageEngine instance)
 
