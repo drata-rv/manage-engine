@@ -21,6 +21,70 @@ The ManageEngine REST API (v1.4) does not expose all required compliance data di
   - `C:\DrataSync\reports\bitlocker_export.csv`
   - `C:\DrataSync\reports\screenlock_export.csv`
 
+## ManageEngine Report Configuration
+
+BitLocker encryption status and screen lock policy are **not exposed by the ManageEngine REST API**. They must be sourced from the ManageEngine Reports module and delivered to the host machine as CSV files before each sync run.
+
+### Scheduling the Reports in ME Cloud
+
+Sign in to the Endpoint Central Cloud console at `https://endpointcentral.manageengine.com`.
+
+**BitLocker Encryption Status**
+1. Navigate to **Reports → Security Reports → BitLocker Encryption Status**.
+2. Click **Schedule** and set the frequency to **Daily**, timed to complete at least **one hour before** the sync script runs (e.g., if the sync runs at 03:00, schedule the export for 02:00).
+3. Set the export format to **CSV**.
+
+**Screen Lock / Screensaver Policy**
+1. Navigate to **Reports → Configuration Reports → Screen Lock** (or create a **Custom Report** scoped to the screensaver/lock policy if that report is not listed).
+2. Apply the same daily schedule and CSV format as above.
+
+### Delivering CSV Files to the Host
+
+Because ME Cloud is SaaS, reports are generated server-side and cannot be written directly to the host filesystem. Choose one of the following delivery mechanisms:
+
+- **Email delivery (most common):** Configure ME to email the CSV as an attachment to a mailbox accessible from the host. Use a scheduled PowerShell or Task Scheduler job to save the attachment to the expected directory. Libraries such as the `Send-MailMessage` equivalent flow or a mail-processing script can automate this.
+- **Manual download:** Download the CSVs from the ME Cloud console and place them at the expected paths before each sync run. Only suitable for infrequent or manual runs.
+- **Scripted API download:** If your ME Cloud license exposes a report download API endpoint, script the download step and prepend it to the sync schedule.
+
+### Required CSV Column Headers
+
+The script matches on exact column names. Validate these against a live export from your ME instance before deploying — header wording can vary between Endpoint Central versions.
+
+**`bitlocker_export.csv`**
+
+| Column | Expected Values |
+|---|---|
+| `Computer Name` | Device hostname (must match `resource_name` from the API) |
+| `Protection Status` | `Protected` or `Unprotected` |
+
+**`screenlock_export.csv`**
+
+| Column | Expected Values |
+|---|---|
+| `Computer Name` | Device hostname |
+| `Idle Timeout` | Integer in **seconds** (e.g., `600`) |
+
+A device is considered screen-lock compliant when its `Idle Timeout` is greater than `0` and less than or equal to `900` seconds (15 minutes). This threshold is defined by `$MaxScreenLockTimeoutSeconds` at the top of the script.
+
+> **Column name mismatch:** If a live export uses different headers (e.g., `ComputerName` instead of `Computer Name`), update the field references inside `Get-MEOfflineCSVData` in the script accordingly.
+
+### Expected File Paths
+
+By default the script reads:
+
+```
+C:\DrataSync\reports\bitlocker_export.csv
+C:\DrataSync\reports\screenlock_export.csv
+```
+
+These can be overridden with the `-ReportDirectory` parameter:
+
+```powershell
+.\ManageEngineToDrataSync.ps1 -ReportDirectory "D:\CustomReports\"
+```
+
+---
+
 ## Configuration
 
 All credentials are injected via Windows System Environment Variables. Define the following on the host machine before running:
@@ -29,6 +93,39 @@ All credentials are injected via Windows System Environment Variables. Define th
 - `ME_CLIENT_SECRET`: OAuth Client Secret from the Zoho Developer Console.
 - `ME_REFRESH_TOKEN`: Long-lived OAuth refresh token obtained during the one-time authorization grant. Does not expire unless unused for 6+ months or explicitly revoked. Store securely (e.g., AWS Secrets Manager, Windows DPAPI).
 - `DRATA_API_TOKEN`: Bearer token generated within Drata for the Custom Device Connection.
+
+### Setting Environment Variables in Windows
+
+Variables must be set at **Machine (System) scope** so they are accessible to the Task Scheduler service account that executes the script. User-scope variables are not inherited by scheduled jobs running under a different account.
+
+**Via the GUI**
+1. Open **Start**, search for **"Edit the system environment variables"**, and press Enter.
+2. In the System Properties dialog, click **Environment Variables…**.
+3. Under **System variables**, click **New** for each entry below, then click OK.
+4. Click OK on all dialogs to save.
+
+**Via PowerShell (requires an elevated session)**
+
+```powershell
+# Run once in an Administrator PowerShell window on the host machine.
+# Changes are effective immediately for new processes; no reboot required.
+
+[System.Environment]::SetEnvironmentVariable("ME_CLIENT_ID",     "your_client_id",     "Machine")
+[System.Environment]::SetEnvironmentVariable("ME_CLIENT_SECRET",  "your_client_secret",  "Machine")
+[System.Environment]::SetEnvironmentVariable("ME_REFRESH_TOKEN",  "your_refresh_token",  "Machine")
+[System.Environment]::SetEnvironmentVariable("DRATA_API_TOKEN",   "your_drata_token",    "Machine")
+```
+
+Verify each value after setting:
+
+```powershell
+[System.Environment]::GetEnvironmentVariable("ME_CLIENT_ID", "Machine")
+```
+
+**Security notes**
+- Never set these values inside the script file or in any file committed to source control.
+- After rotating any credential, update the environment variable on the host and confirm the next sync log reflects a successful token acquisition.
+- For higher-assurance environments, consider retrieving secrets at runtime from **AWS Secrets Manager** or **Azure Key Vault** and injecting them into the script's variables, rather than persisting them as machine-level environment variables.
 
 ### One-Time OAuth Setup
 
