@@ -30,21 +30,33 @@ BitLocker encryption status and screen lock policy are **not exposed by the Mana
 Sign in to the Endpoint Central Cloud console at `https://endpointcentral.manageengine.com`.
 
 **BitLocker Encryption Status**
-1. Navigate to **Reports → Security Reports → BitLocker Encryption Status**.
+1. Navigate to **Reports → BitLocker Reports**.
 2. Click **Schedule** and set the frequency to **Daily**, timed to complete at least **one hour before** the sync script runs (e.g., if the sync runs at 03:00, schedule the export for 02:00).
 3. Set the export format to **CSV**.
 
 **Screen Lock / Screensaver Policy**
-1. Navigate to **Reports → Configuration Reports → Screen Lock** (or create a **Custom Report** scoped to the screensaver/lock policy if that report is not listed).
-2. Apply the same daily schedule and CSV format as above.
+
+> ⚠️ **No native report or API confirmed for this data point.** After cross-checking the ManageEngine Endpoint Central Cloud API documentation and report catalogue, there is no REST API endpoint that reads screen lock or screensaver timeout *status* from managed devices, and no dedicated compliance report for this setting is listed in the cloud edition docs. Display/screensaver configuration in Endpoint Central is **push-only** — ME can deploy screensaver policy to devices but does not expose a read-back mechanism via the standard API.
+>
+> **Recommended approach — Registry Script Report:** ManageEngine supports deploying a script to managed devices that fetches arbitrary Windows registry values and collects the results into an exportable report. The relevant registry keys for screen lock are:
+> - `HKEY_CURRENT_USER\Control Panel\Desktop\ScreenSaveTimeOut` — idle timeout in seconds
+> - `HKEY_CURRENT_USER\Control Panel\Desktop\ScreenSaverIsSecure` — `1` means password is required on resume
+>
+> To use this approach:
+> 1. In the ME Cloud console, navigate to the **Script Templates** or **Custom Scripts** feature and create a script that reads these registry keys across all managed devices.
+> 2. Schedule the script to run daily and export results to a CSV report prior to the sync window.
+> 3. Ensure the exported CSV includes a `Computer Name` column and an `Idle Timeout` column (in seconds) to match the field names the script expects, or update the field references in `Get-MEOfflineCSVData` to match whatever columns the script report produces.
+>
+> **Alternative — Custom Query Report:** Endpoint Central supports custom SQL queries against its internal database. The screensaver policy data *may* be stored in a queryable table, but ManageEngine does not publish the database schema publicly. Contact **endpointcentral-support@manageengine.com** to confirm whether the relevant table and fields are accessible before pursuing this route.
+>
+> Until one of the above is validated in your specific ME instance, `screenLock` will default to `false` for all devices (see `Get-MEOfflineCSVData` — missing CSV files are handled gracefully with a `WARN` log entry).
 
 ### Delivering CSV Files to the Host
 
-Because ME Cloud is SaaS, reports are generated server-side and cannot be written directly to the host filesystem. Choose one of the following delivery mechanisms:
+Because ME Cloud is SaaS, reports are generated server-side and cannot be written directly to the host filesystem. The confirmed delivery mechanism is email:
 
-- **Email delivery (most common):** Configure ME to email the CSV as an attachment to a mailbox accessible from the host. Use a scheduled PowerShell or Task Scheduler job to save the attachment to the expected directory. Libraries such as the `Send-MailMessage` equivalent flow or a mail-processing script can automate this.
+- **Email delivery:** Configure ME to email the CSV as an attachment on the schedule above. Set up a mailbox accessible from the host and use a scheduled PowerShell or Task Scheduler job to save the attachment to the expected directory before the sync script fires.
 - **Manual download:** Download the CSVs from the ME Cloud console and place them at the expected paths before each sync run. Only suitable for infrequent or manual runs.
-- **Scripted API download:** If your ME Cloud license exposes a report download API endpoint, script the download step and prepend it to the sync schedule.
 
 ### Required CSV Column Headers
 
