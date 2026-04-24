@@ -1,14 +1,17 @@
 <#
 .SYNOPSIS
-    Pulls device compliance data from ManageEngine Endpoint Central (on-prem) and delivers to Drata.
+    Pulls device compliance data from ManageEngine Endpoint Central (SaaS/Cloud) and delivers to Drata.
 
 .DESCRIPTION
-    This script extracts data from ME Endpoint Central using a static token as defined in the 
-    Custom Device Connection specification. 
-    It checks SOM Computers, Installed Software, and Patch status entirely via the API.
-    It resolves BitLocker and ScreenLock compliance by mapping devices against locally exported CSV files
-    (a limitation of the ME API).
-    Finally, it pushes the fully reconstructed data into Drata's Custom Device Connection API via JSON.
+    This script extracts data from ME Endpoint Central Cloud (US region) using the Zoho OAuth 2.0
+    client credentials flow. A long-lived refresh token is stored as an environment variable; the
+    script exchanges it for a short-lived access token at runtime and proactively refreshes it
+    mid-run if the token nears expiry.
+
+    It checks SOM Computers, Installed Software, and Patch status via the ME Cloud API.
+    BitLocker and ScreenLock compliance are resolved from locally scheduled CSV exports
+    (these two data points are not exposed by the ME REST API).
+    The merged device payload is POSTed to the Drata Custom Device Connection API.
 
 .PARAMETER LogDirectory
     Path where the script will write log files. Defaults to C:\DrataSync\logs\
@@ -27,9 +30,19 @@ param (
 # Configuration
 # ---------------------------------------------------------
 
-# Environment variables for execution safety
-$MeServerUrl     = $env:ME_SERVER_URL -replace '/$', '' # e.g. "http://manageengine.local:8020"
-$MeAuthToken     = $env:ME_AUTH_TOKEN
+# Zoho OAuth 2.0 credentials for ManageEngine Endpoint Central Cloud.
+# Generate a Client ID + Client Secret at https://api-console.zoho.com (US).
+# Exchange the one-time authorization code for a refresh token once manually,
+# then store all three values as Windows environment variables on the host.
+# The refresh token does not expire unless revoked or unused for 6+ months.
+$MeClientId      = $env:ME_CLIENT_ID
+$MeClientSecret  = $env:ME_CLIENT_SECRET
+$MeRefreshToken  = $env:ME_REFRESH_TOKEN
+
+# ManageEngine Endpoint Central Cloud - United States region (fixed)
+$MeServerUrl     = "https://endpointcentral.manageengine.com"
+$ZohoAccountsUrl = "https://accounts.zoho.com"
+
 $DrataApiToken   = $env:DRATA_API_TOKEN
 
 # Array heuristics for Software Matching
@@ -46,6 +59,12 @@ $MaxScreenLockTimeoutSeconds = 900
 $LogFile          = Join-Path $LogDirectory "SyncRun_$(Get-Date -Format 'yyyyMMdd').log"
 $BitLockerCsvPath = Join-Path $ReportDirectory "bitlocker_export.csv"
 $ScreenLockCsvPath = Join-Path $ReportDirectory "screenlock_export.csv"
+
+# ---------------------------------------------------------
+# OAuth Token State (script-scoped; not exported)
+# ---------------------------------------------------------
+$script:MeAccessToken = $null
+$script:MeTokenExpiry = [DateTime]::MinValue
 
 # ---------------------------------------------------------
 # Framework Functions
@@ -82,15 +101,63 @@ Function Write-SyncLog {
     Add-Content -Path $LogFile -Value $LogEntry
 }
 
+Function Get-MEAccessToken {
+    <#
+    Exchanges the stored OAuth refresh token for a new short-lived access token.
+    Stores the token and its expiry in script-scoped variables. A 120-second
+    buffer is applied so callers never use a token that is about to expire.
+    #>
+    Write-SyncLog "Requesting new OAuth access token from Zoho..."
+
+    $TokenUrl = "$ZohoAccountsUrl/oauth/v2/token"
+    $Body = @{
+        grant_type    = "refresh_token"
+        client_id     = $MeClientId
+        client_secret = $MeClientSecret
+        refresh_token = $MeRefreshToken
+    }
+
+    try {
+        $Response = Invoke-RestMethod -Uri $TokenUrl -Method POST `
+                        -Body $Body `
+                        -ContentType "application/x-www-form-urlencoded" `
+                        -ErrorAction Stop
+
+        if ([string]::IsNullOrWhiteSpace($Response.access_token)) {
+            throw "Zoho token endpoint returned no access_token. Full response: $($Response | ConvertTo-Json -Compress)"
+        }
+
+        $script:MeAccessToken = $Response.access_token
+
+        # Apply a 120-second safety buffer before the stated expiry (default 3600 s)
+        $ExpiresIn = if ($Response.expires_in -gt 0) { [int]$Response.expires_in } else { 3600 }
+        $script:MeTokenExpiry = (Get-Date).AddSeconds($ExpiresIn - 120)
+
+        Write-SyncLog "OAuth access token acquired. Effective lifetime: $($ExpiresIn - 120) seconds."
+    } catch {
+        Write-SyncLog "FATAL: Failed to acquire ManageEngine OAuth access token: $_" -Level "ERROR"
+        throw
+    }
+}
+
 Function Invoke-MEWebRequest {
-    <# Enforces ManageEngine static token auth handling #>
+    <#
+    Issues an authenticated GET request to the ManageEngine Cloud API.
+    Proactively refreshes the Zoho OAuth access token when it is at or past
+    its buffered expiry so individual API calls never fail due to a stale token.
+    #>
     param(
         [Parameter(Mandatory=$true)][string]$Endpoint
     )
-    
+
+    # Refresh proactively if token is absent or within the safety buffer
+    if (-not $script:MeAccessToken -or (Get-Date) -ge $script:MeTokenExpiry) {
+        Get-MEAccessToken
+    }
+
     $Uri = "$MeServerUrl$Endpoint"
     $Headers = @{
-        "Authorization" = $MeAuthToken
+        "Authorization" = "Zoho-oauthtoken $($script:MeAccessToken)"
         "Content-Type"  = "application/json"
     }
 
@@ -272,12 +339,15 @@ Function Get-MEOfflineCSVData {
 # Main Execution / Orchestration
 # ---------------------------------------------------------
 try {
-    Write-SyncLog "=== Starting ManageEngine to Drata Sync ==="
-    
-    if (-not $MeServerUrl -or -not $MeAuthToken -or -not $DrataApiToken) {
-        throw "Missing required environment variables. Ensure ME_SERVER_URL, ME_AUTH_TOKEN, and DRATA_API_TOKEN are configured."
+    Write-SyncLog "=== Starting ManageEngine to Drata Sync (Cloud) ==="
+
+    if (-not $MeClientId -or -not $MeClientSecret -or -not $MeRefreshToken -or -not $DrataApiToken) {
+        throw "Missing required environment variables. Ensure ME_CLIENT_ID, ME_CLIENT_SECRET, ME_REFRESH_TOKEN, and DRATA_API_TOKEN are configured."
     }
-    
+
+    # Acquire an access token eagerly so auth failures surface before any data work begins
+    Get-MEAccessToken
+
     $OfflineDataHash = Get-MEOfflineCSVData
     $Computers = Get-MEComputers
     
@@ -317,13 +387,16 @@ try {
         # Resolve Serial Number
         $SerialNumber = $Comp.servicetag
         if ([string]::IsNullOrWhiteSpace($SerialNumber)) {
-            $SerialNumber = $ResId
+            $SerialNumber = [string]$ResId   # resource_id is numeric in JSON; cast to string before .Trim()
         }
 
         # Resolve OS name string
         $OsVersionStr = $Comp.os_version
         if ([string]::IsNullOrWhiteSpace($OsVersionStr)) {
             $OsVersionStr = $Comp.os_name
+        }
+        if ([string]::IsNullOrWhiteSpace($OsVersionStr)) {
+            $OsVersionStr = ""
         }
         
         # Dynamic API Lookups
