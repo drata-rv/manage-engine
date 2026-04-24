@@ -36,7 +36,7 @@ Sign in to the Endpoint Central Cloud console at `https://endpointcentral.manage
 
 **Screen Lock / Screensaver Policy**
 
-> ⚠️ **No native report or API confirmed for this data point.** After cross-checking the ManageEngine Endpoint Central Cloud API documentation and report catalogue, there is no REST API endpoint that reads screen lock or screensaver timeout *status* from managed devices, and no dedicated compliance report for this setting is listed in the cloud edition docs. Display/screensaver configuration in Endpoint Central is **push-only** — ME can deploy screensaver policy to devices but does not expose a read-back mechanism via the standard API.
+> **No native report or API confirmed for this data point.** After cross-checking the ManageEngine Endpoint Central Cloud API documentation and report catalogue, there is no REST API endpoint that reads screen lock or screensaver timeout *status* from managed devices, and no dedicated compliance report for this setting is listed in the cloud edition docs. Display/screensaver configuration in Endpoint Central is **push-only** — ME can deploy screensaver policy to devices but does not expose a read-back mechanism via the standard API.
 >
 > **Recommended approach — Registry Script Report:** ManageEngine supports deploying a script to managed devices that fetches arbitrary Windows registry values and collects the results into an exportable report. The relevant registry keys for screen lock are:
 > - `HKEY_CURRENT_USER\Control Panel\Desktop\ScreenSaveTimeOut` — idle timeout in seconds
